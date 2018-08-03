@@ -1,7 +1,8 @@
 /**
  * @file cpptoml.h
  * @author Chase Geigle
- * @date May 2013
+ * @author Sal Mangano
+ * @date Aug 2018
  */
 
 #ifndef _CPPTOML_H_
@@ -16,6 +17,7 @@
 #include <iomanip>
 #include <map>
 #include <memory>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -1256,6 +1258,137 @@ get_impl(const std::shared_ptr<base>& elem)
     }
 }
 
+inline std::string toString(std::shared_ptr<base> p)
+{
+  {
+    auto pv = p->as<int64_t>() ;
+    if (pv)
+    {
+      std::ostringstream oss ;
+      oss << pv->get() ;
+      return oss.str() ;
+    }
+  }
+  {
+    auto pv = p->as<double>() ;
+    if (pv)
+    {
+      std::ostringstream oss ;
+      oss << std::showpoint << pv->get() ;
+      return oss.str() ;
+    }
+  }
+  {
+    auto pv = p->as<bool>() ;
+    if (pv)
+    {
+      std::ostringstream oss ;
+      oss << pv->get() ;
+      return oss.str() ;
+    }
+  }
+  {
+    auto pv = p->as<std::string>() ;
+    if (pv)
+    {
+      return pv->get();
+    }
+  }
+
+  throw std::runtime_error("No string representation") ;
+}
+
+class constants
+{
+public:
+
+  static const std::regex&  DEF_VAR_REGEX() {static std::regex r("\\$\\{([a-zA-Z_]\\w*)\\}") ; return r;} ;
+
+  using VariantPtr =  std::shared_ptr<cpptoml::base> ;
+  using Map = std::unordered_map<std::string, VariantPtr> ;
+  using const_iterator = Map::const_iterator ;
+
+  constants(const std::regex varRegex = DEF_VAR_REGEX()) 
+    : _varRegEx(varRegex) 
+  {
+
+  }
+
+  constants(const std::shared_ptr<table> config) ;
+
+  template <class T>
+  void set(const std::string& variable, const T& value) 
+  {
+    _table[variable] = cpptoml::make_value(value) ;
+  }
+
+  /**
+   * Update constants from config overriding any existing constant values and adding new ones
+   */
+  void update(const std::shared_ptr<table> config) 
+  {
+    initialize(config, true) ;
+  }
+  /**
+   * Augment constants from config ignoring any existing constant values in *this but adding new ones
+   */
+  void augment(const std::shared_ptr<table> config) 
+  {
+    initialize(config, false) ;
+  }
+
+  void clear() 
+  {
+    _table.clear() ;
+  }
+
+  bool matchVar(const std::string& variable) const
+  {
+    std::smatch varMatch;
+    return std::regex_match(variable, varMatch, _varRegEx) ;
+  }
+
+  bool hasEmbeddedVar(const std::string& variable) const
+  {
+    std::smatch varMatch;
+    return std::regex_search(variable, varMatch, _varRegEx) ;
+  }
+
+  template <class T>
+  T getAs(const std::string& variable) const ;
+
+  /**
+   * Look for sequnces in input that match varRegEx and replace with values repeating until no variables exist. 
+   * Throws std::runtime_error if cycle detected or value not found.
+   */
+  std::string interpolate(const std::string input) const 
+  {
+    std::string output = input ;
+    std::smatch varMatch;
+    int maxLoops = 30 ;
+    while(std::regex_search(output, varMatch, _varRegEx) && --maxLoops > 0) {
+      size_t pos = varMatch.position(0) ;
+      size_t len = varMatch.length(0) ;
+      auto pv = _table.at(varMatch[1].str()) ;
+      output.replace(pos, len, toString(pv)) ;
+    }
+    return output ;
+  }
+
+  const_iterator begin() const { return _table.begin() ; }
+  const_iterator end() const { return _table.end() ; }
+
+private:
+
+  void initialize(const std::shared_ptr<table>& config, bool update) ;
+
+private:
+
+  Map _table ;
+  std::regex _varRegEx ;
+
+} ;
+
 /**
  * Represents a TOML keytable.
  */
@@ -1266,6 +1399,8 @@ class table : public base
     friend std::shared_ptr<table> make_table();
 
     std::shared_ptr<base> clone() const override;
+
+    void set_constants(std::shared_ptr<constants> pc) { constants_ = pc ;}
 
     /**
      * tables can be iterated over.
@@ -1353,8 +1488,10 @@ class table : public base
      */
     std::shared_ptr<table> get_table(const std::string& key) const
     {
-        if (contains(key) && get(key)->is_table())
-            return std::static_pointer_cast<table>(get(key));
+        if (contains(key) && get(key)->is_table()) {
+            auto t =  std::static_pointer_cast<table>(get(key));
+            t->set_constants(constants_) ;
+        }
         return nullptr;
     }
 
@@ -1365,7 +1502,11 @@ class table : public base
     std::shared_ptr<table> get_table_qualified(const std::string& key) const
     {
         if (contains_qualified(key) && get_qualified(key)->is_table())
-            return std::static_pointer_cast<table>(get_qualified(key));
+        {
+            auto t = std::static_pointer_cast<table>(get_qualified(key));
+            t->set_constants(constants_) ;
+            return t ;
+        }
         return nullptr;
     }
 
@@ -1416,7 +1557,7 @@ class table : public base
      * to the template parameter from a given key.
      */
     template <class T>
-    option<T> get_as(const std::string& key) const
+    option<T> get_as_(const std::string& key) const
     {
         try
         {
@@ -1428,13 +1569,24 @@ class table : public base
         }
     }
 
+    template <class T>
+    option<T> get_as(const std::string& key) const
+    {
+      if (constants_)
+      {
+        return get_as_dref<T>(key) ;
+      }
+      return get_as_<T>(key) ;
+    }
+
+
     /**
      * Helper function that attempts to get a value corresponding
      * to the template parameter from a given key. Will resolve "qualified
      * keys".
      */
     template <class T>
-    option<T> get_qualified_as(const std::string& key) const
+    option<T> get_qualified_as_(const std::string& key) const
     {
         try
         {
@@ -1444,6 +1596,16 @@ class table : public base
         {
             return {};
         }
+    }
+
+    template <class T>
+    option<T> get_qualified_as(const std::string& key) const
+    {
+      if (constants_)
+      {
+        return get_qualified_as_dref<T>(key) ;
+      }
+      return get_qualified_as_<T>(key) ;
     }
 
     /**
@@ -1536,6 +1698,68 @@ class table : public base
         map_.erase(key);
     }
 
+    template <class T>
+    cpptoml::option<T> get_as_dref(const std::string& key) const
+    {
+      auto maybeVar = get_as<std::string>(key) ;
+      if (maybeVar)
+      {
+        if (constants_->matchVar(*maybeVar))
+        {
+          return cpptoml::option<T>(constants_->getAs<T>(*maybeVar)) ;
+        }
+      }
+      return get_as_<T>(key) ;
+    }
+
+    template <class T>
+    cpptoml::option<T> get_qualified_as_dref(const std::string& key) const
+    {
+      auto maybeVar = get_qualified_as_<std::string>(key) ;
+      if (maybeVar)
+      {
+        if (constants_->matchVar(*maybeVar))
+        {
+          return cpptoml::option<T>(constants_->getAs<T>(*maybeVar)) ;
+        }
+      }
+      return get_qualified_as_<T>(key) ;
+    }
+
+    cpptoml::option<std::string> interpolate(const std::string& key) const
+    {
+      auto maybeVar = get_as_<std::string>(key) ;
+      if (maybeVar)
+      {
+        if (constants_->hasEmbeddedVar(*maybeVar))
+        {
+          return cpptoml::option<std::string>(constants_->interpolate(*maybeVar)) ;
+        }
+        else
+        {
+          return maybeVar ;
+        }
+      }
+      return {} ;
+    }
+
+    cpptoml::option<std::string> interpolate_qualified(const std::string& key) const
+    {
+      auto maybeVar = get_qualified_as_<std::string>(key) ;
+      if (maybeVar)
+      {
+        if (constants_->hasEmbeddedVar(*maybeVar))
+        {
+          return cpptoml::option<std::string>(constants_->interpolate(*maybeVar)) ;
+        }
+        else
+        {
+          return maybeVar ;
+        }
+      }
+      return {} ;
+    }
+
   private:
 #if defined(CPPTOML_NO_RTTI)
     table() : base(base_type::TABLE)
@@ -1600,7 +1824,64 @@ class table : public base
     }
 
     string_to_base_map map_;
+    std::shared_ptr<constants> constants_ ;
 };
+
+template <>
+inline
+option<std::string> table::get_as<std::string>(const std::string& key) const
+{
+  if (constants_)
+  {
+    return interpolate(key) ;
+  }
+  return get_as_<std::string>(key) ;
+}
+
+template <>
+inline
+option<std::string> table::get_qualified_as<std::string>(const std::string& key) const
+{
+  if (constants_)
+  {
+    return interpolate_qualified(key) ;
+  }
+  return get_qualified_as_<std::string>(key) ;
+}
+
+inline
+constants::constants(const std::shared_ptr<table> config) 
+    : _varRegEx(DEF_VAR_REGEX()) 
+{
+    auto conConfig = config->get_table("constants") ;
+    if (!conConfig)
+      return ;
+
+    auto varRegEx = conConfig->get_as<std::string>("varRegEx") ;
+    if (varRegEx)
+    {
+        _varRegEx = std::regex(*varRegEx) ;
+    }
+    update(conConfig) ;
+}
+
+inline
+void constants::initialize(const std::shared_ptr<table>& config, bool update) 
+{
+  for (auto entry : *config)
+  {
+    if (entry.first == "varRegEx")
+      continue ;
+
+    //if we are not updating then 
+    if (!update && _table.count(entry.first))
+    {
+      continue ;
+    }
+
+    _table[entry.first] = entry.second ;
+  }
+}
 
 /**
  * Helper function that attempts to get an array of arrays for a given
@@ -3453,5 +3734,70 @@ inline std::ostream& operator<<(std::ostream& stream, const array& a)
     a.accept(writer);
     return stream;
 }
+
+template <class T>
+inline
+T constants::getAs(const std::string& variable) const 
+{
+  std::smatch varMatch;
+  if (std::regex_match(variable, varMatch, _varRegEx)) {
+    if (varMatch.size() == 2) {
+      std::shared_ptr<value<T>> pValue = _table.at(varMatch[1].str())->as<T>() ;
+      if (pValue)
+      {
+        return pValue->get() ; 
+      }
+      else
+      {
+        throw std::runtime_error("type error: '" + variable + "'") ;
+      }
+    }
+    else
+    {
+      throw std::runtime_error("malformed variable: '" + variable + "'") ;
+    }
+  }
+  else
+  {
+      auto pValue = _table.at(variable)->as<T>() ;
+      if (pValue)
+      {
+        return pValue->get() ; 
+      }
+      else
+      {
+        throw std::runtime_error("type error: '" + variable + "'") ;
+      }
+  }
+}
+
+template <>
+inline
+signed char constants::getAs<signed char>(const std::string& variable) const 
+{
+  return static_cast<signed char>(getAs<int64_t>(variable)) ;
+}
+
+template <>
+inline
+short int constants::getAs<short int>(const std::string& variable) const 
+{
+  return static_cast<short int>(getAs<int64_t>(variable)) ;
+}
+
+template <>
+inline
+unsigned int constants::getAs<unsigned int>(const std::string& variable) const 
+{
+  return static_cast<unsigned int>(getAs<int64_t>(variable)) ;
+}
+
+template <>
+inline
+long unsigned int constants::getAs<long unsigned int>(const std::string& variable) const 
+{
+  return static_cast<long unsigned int>(getAs<uint64_t>(variable)) ;
+}
+
 }
 #endif
