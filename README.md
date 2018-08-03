@@ -7,6 +7,8 @@ It is reasonably conforming, with the exception of unicode escape
 characters in strings. This includes support for the new DateTime format,
 inline tables, multi-line basic and raw strings, and digit separators.
 
+This fork of the original implementation adds the ability to associate a set of named constants with a toml table such that string values in the table which match a variable pattern (default ${someVar} are dreferenced against the constants to produce the actual value. This is very useful for situations where an application must be deployed in several envs (e.g., DEV, QA, UAT, PROD) where the configuration file is the same but some values are env specific. Thje contstants provide the env specific parts.
+
 Alternatives:
 - [ctoml][ctoml] is a C++11 implementation of a TOML parser, but only
   supports v0.2.0.
