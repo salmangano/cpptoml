@@ -1302,7 +1302,7 @@ class constants
 {
 public:
 
-  static const std::regex&  DEF_VAR_REGEX() {static std::regex r("\\$\\{([a-zA-Z_]\\w*)\\}") ; return r;} ;
+  static const std::regex&  DEF_VAR_REGEX() {static std::regex r("\\$\\(([a-zA-Z_]\\w*)\\)") ; return r;} ;
 
   using VariantPtr =  std::shared_ptr<cpptoml::base> ;
   using Map = std::unordered_map<std::string, VariantPtr> ;
@@ -1491,6 +1491,7 @@ class table : public base
         if (contains(key) && get(key)->is_table()) {
             auto t =  std::static_pointer_cast<table>(get(key));
             t->set_constants(constants_) ;
+            return t ;
         }
         return nullptr;
     }
@@ -3790,6 +3791,13 @@ inline
 unsigned int constants::getAs<unsigned int>(const std::string& variable) const 
 {
   return static_cast<unsigned int>(getAs<int64_t>(variable)) ;
+}
+
+template <>
+inline
+int constants::getAs<int>(const std::string& variable) const 
+{
+  return static_cast<int>(getAs<int64_t>(variable)) ;
 }
 
 template <>
