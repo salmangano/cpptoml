@@ -42,6 +42,7 @@ namespace cpptoml
 {
 class writer; // forward declaration
 class base;   // forward declaration
+class constants; // forward declaration
 #if defined(CPPTOML_USE_MAP)
 // a std::map will ensure that entries a sorted, albeit at a slight
 // performance penalty relative to the (default) unordered_map
@@ -500,6 +501,7 @@ class base : public std::enable_shared_from_this<base>
     virtual ~base() = default;
 
     virtual std::shared_ptr<base> clone() const = 0;
+    virtual std::shared_ptr<base> dref(const constants& c) const = 0 ;
 
     /**
      * Determines if the given TOML element is a value.
@@ -575,6 +577,7 @@ class base : public std::enable_shared_from_this<base>
     template <class Visitor, class... Args>
     void accept(Visitor&& visitor, Args&&... args) const;
 
+    
 #if defined(CPPTOML_NO_RTTI)
     base_type type() const
     {
@@ -618,6 +621,7 @@ class value : public base
     static_assert(valid_value<T>::value, "invalid value type");
 
     std::shared_ptr<base> clone() const override;
+    std::shared_ptr<base> dref(const constants& c) const override ;
 
     value(const make_shared_enabler&, const T& val) : value(val)
     {
@@ -775,6 +779,7 @@ class array : public base
     friend std::shared_ptr<array> make_array();
 
     std::shared_ptr<base> clone() const override;
+    std::shared_ptr<base> dref(const constants& c) const override ;
 
     virtual bool is_array() const override
     {
@@ -1066,6 +1071,7 @@ class table_array : public base
 
   public:
     std::shared_ptr<base> clone() const override;
+    std::shared_ptr<base> dref(const constants& c) const override ;
 
     using size_type = std::size_t;
 
@@ -1378,6 +1384,8 @@ public:
   const_iterator begin() const { return _table.begin() ; }
   const_iterator end() const { return _table.end() ; }
 
+  std::shared_ptr<base> dref(const std::string& name) const ; 
+  
 private:
 
   void initialize(const std::shared_ptr<table>& config, bool update) ;
@@ -1399,6 +1407,20 @@ class table : public base
     friend std::shared_ptr<table> make_table();
 
     std::shared_ptr<base> clone() const override;
+    std::shared_ptr<base> dref(const constants& c) const override ;
+    std::shared_ptr<table> dref() const
+    {
+      std::shared_ptr<base> p ;
+      if (constants_)
+      {
+        p = dref(*constants_) ;
+      }
+      else
+      {
+        p = clone() ;
+      }
+      return std::static_pointer_cast<table>(p) ;
+    }
 
     void set_constants(std::shared_ptr<constants> pc) { constants_ = pc ;}
 
@@ -1973,12 +1995,38 @@ std::shared_ptr<base> value<T>::clone() const
     return make_value(data_);
 }
 
+template <class T>
+std::shared_ptr<base> value<T>::dref(const constants& c) const
+{
+  try
+  {
+    auto maybeVar = as<std::string>() ;
+    if (maybeVar && c.hasEmbeddedVar(maybeVar->get())) 
+    {
+      return c.dref(maybeVar->get()) ;
+    }
+  }
+  catch (...)
+  {
+  }
+  return clone() ;
+}
+
 inline std::shared_ptr<base> array::clone() const
 {
     auto result = make_array();
     result->reserve(values_.size());
     for (const auto& ptr : values_)
         result->values_.push_back(ptr->clone());
+    return result;
+}
+
+inline std::shared_ptr<base> array::dref(const constants& c) const
+{
+    auto result = make_array();
+    result->reserve(values_.size());
+    for (const auto& ptr : values_)
+        result->values_.push_back(ptr->dref(c));
     return result;
 }
 
@@ -1991,11 +2039,28 @@ inline std::shared_ptr<base> table_array::clone() const
     return result;
 }
 
+inline std::shared_ptr<base> table_array::dref(const constants& c) const
+{
+    auto result = make_table_array();
+    result->reserve(array_.size());
+    for (const auto& ptr : array_)
+        result->array_.push_back(ptr->dref(c)->as_table());
+    return result;
+}
+
 inline std::shared_ptr<base> table::clone() const
 {
     auto result = make_table();
     for (const auto& pr : map_)
         result->insert(pr.first, pr.second->clone());
+    return result;
+}
+
+inline std::shared_ptr<base> table::dref(const constants& c) const
+{
+    auto result = make_table();
+    for (const auto& pr : map_)
+        result->insert(pr.first, pr.second->dref(c));
     return result;
 }
 
@@ -3734,6 +3799,25 @@ inline std::ostream& operator<<(std::ostream& stream, const array& a)
     toml_writer writer{stream};
     a.accept(writer);
     return stream;
+}
+
+inline
+std::shared_ptr<base> constants::dref(const std::string& variable) const 
+{
+  std::smatch varMatch;
+  if (std::regex_search(variable, varMatch, _varRegEx)) {
+    if (size_t(varMatch.length(0)) == variable.size())
+    {
+      //entire match - no interpolation required
+      return _table.at(varMatch[1].str())->clone() ;
+    }
+    else 
+    {
+      std::string output = interpolate(variable) ;
+      return make_value(output) ;
+    }
+  }
+  return make_value(variable) ;
 }
 
 template <class T>
