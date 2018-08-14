@@ -1702,7 +1702,7 @@ class table : public base
     template <class T>
     cpptoml::option<T> get_as_dref(const std::string& key) const
     {
-      auto maybeVar = get_as<std::string>(key) ;
+      auto maybeVar = get_as_<std::string>(key) ;
       if (maybeVar)
       {
         if (constants_->matchVar(*maybeVar))
@@ -1719,7 +1719,7 @@ class table : public base
       auto maybeVar = get_qualified_as_<std::string>(key) ;
       if (maybeVar)
       {
-        if (constants_->matchVar(*maybeVar))
+        if (constants_ && constants_->matchVar(*maybeVar))
         {
           return cpptoml::option<T>(constants_->getAs<T>(*maybeVar)) ;
         }
@@ -1732,7 +1732,7 @@ class table : public base
       auto maybeVar = get_as_<std::string>(key) ;
       if (maybeVar)
       {
-        if (constants_->hasEmbeddedVar(*maybeVar))
+        if (constants_ && constants_->hasEmbeddedVar(*maybeVar))
         {
           return cpptoml::option<std::string>(constants_->interpolate(*maybeVar)) ;
         }
@@ -1749,7 +1749,7 @@ class table : public base
       auto maybeVar = get_qualified_as_<std::string>(key) ;
       if (maybeVar)
       {
-        if (constants_->hasEmbeddedVar(*maybeVar))
+        if (constants_ && constants_->hasEmbeddedVar(*maybeVar))
         {
           return cpptoml::option<std::string>(constants_->interpolate(*maybeVar)) ;
         }
